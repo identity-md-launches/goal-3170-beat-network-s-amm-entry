@@ -21,7 +21,11 @@ Limits: deployed runtime <= **24,576 bytes**; engine `afterSwap` peak <= **245,0
 | Engine | 9802114..9803137 | TC-A confirmation block B (e4-confirm-*) |
 | Engine | 9803138..9803185 | e4-combo-port (3 x 16) |
 | Engine | 9803186..9803187 | e4-trunk-candidate smoke (Candidate vs qt1, spent) |
-| Engine | 9803188 | **NEXT FREE ENGINE SEED** |
+| Engine | 9803188..9803571 | Reserved outside the e6-freeze-combo item |
+| Engine | 9803572..9804595 | Combo (ComboG(1)) fresh confirmation block A (pending) |
+| Engine | 9804596..9805619 | Combo (ComboG(1)) fresh confirmation block B (pending) |
+| Engine | 9805620..9805635 | TC-A gap run (pending) |
+| Engine | 9805636 | **NEXT FREE ENGINE SEED** |
 | Replica | 60000..61023 | Choose |
 | Replica | 10000..12047 | Report |
 | Replica | 70000..70099 | Gate F |
@@ -48,7 +52,45 @@ See `tools/README.md` for the pinned engine setup. This tools item preserves the
 - `contracts/Candidate.sol` (TC-A, `TaylorTwoCompQmTrim2`): `reference/qtr2/Strategy.sol` + `contracts/candidate.diff` (`patch -p1`), SHA256 `b87234c89e094f4955578417c1266129b0f96e6dfda68e3fb8866e00eeda71a2`, deployed runtime **21,102 bytes** (solc 0.8.24, challenge compiler).
 - Python reference: `reference/twocomp/twocomp.py`, `TwoComp`, `DUAL_CUTS=2`.
 - Gates: [reference/candidate/GATES.md](reference/candidate/GATES.md) (P, Q +0.4248 ± 0.0122 vs qt1-ref on 10000..12047, gas probe 177,611, F max 6.3e-6 bps on 50 x 2,000, engine +0.4145 ± 0.0423 vs qt1 on n=128, peak 201,916, 0 OOG).
-- COMBO references (replica only, no Solidity yet): [reference/combo/README.md](reference/combo/README.md).
+- COMBO references (replica only): [reference/combo/README.md](reference/combo/README.md).
+
+TC-A is the **confirmed fallback**: it is the candidate to use unless Combo passes its fresh confirmation.
+
+## Combo (ComboG(1), frozen, NOT yet confirmed)
+
+Credit: Taylor (gtmcknight) for the replica, Gaussian filter, fee rule and qm tables that ComboG builds on.
+
+- `contracts/Combo.sol` (`TaylorComboGQmTrim2`) = `contracts/Candidate.sol` (TC-A) + `contracts/combo.diff` (`patch -p1` or `git apply -p1` against a copy named `Candidate.sol`). SHA256 `f904a486b1dcfbd6fcf40aa48920d1bb6b79ad2ac1c99a2cbbb16d4272c2c616`, 47,171 bytes. `combo.diff` SHA256 `ee1e263770b2beecda27dbf2b85365c6536dd1e6f4c69f3ed5ad6451d39290b2`. Both come verbatim from the [gd-ab-1 report](https://api.imd.fun/artifacts/9b842d35c17245af4dd2bfc0ec608263f9b7edcb2db619cffba7d36d1d853740).
+- Python reference: `reference/combo/combog.py`, `combog.ComboG`, `GATE = 1`, SHA256 `321c61dff43c1677722d4b52e066ed5296f08ac7b72465245f04eb04e1c143cb`, 6,011 bytes. It imports `twocomp` (unchanged, `DUAL_CUTS=2`, SHA256 `9d3c1833…f0f0af`) and reads `reference/qt1/blob.bin` (`3ac7cb88…e38e`). Standard library only.
+- Evidence, all reported by gd-ab-1 and not re-run here: [reference/combo/GATES.md](reference/combo/GATES.md) (Q vs qt1-ref +0.6029 ± 0.0130 on 10000..12047; F max 3.1e-6 bps on 50 x 2,000; dt=1 probe peak 203,136; runtime 22,058 bytes; 0 OOG on the sampled replays, no universal gas bound). Its engine run on 9800000..9800007 reused seeds and is excluded.
+- **Final confirmation is pending** (fresh engine seeds A 9803572..9804595, B 9804596..9805619; TC-A gap 9805620..9805635; next free 9805636). No board score is claimed. The requester decides on and makes any board submission.
+
+Prerequisites: replica checks need only `python3` (stdlib). Compile, F and engine need the pinned challenge setup in [tools/README.md](tools/README.md) (Linux x86_64, `uv`, solc 0.8.24, `amm_sim_rs` wheel, `pyrevm==0.3.7`).
+
+Rebuild and replica replay, from the repository root:
+
+```sh
+mkdir -p test/scratch/rebuild && cp contracts/Candidate.sol test/scratch/rebuild/
+(cd test/scratch/rebuild && patch -p1 < ../../../contracts/combo.diff)  # or: git apply -p1
+sha256sum test/scratch/rebuild/Candidate.sol contracts/Combo.sol   # both f904a486...
+python3 -I -c "import sys,os;R=os.getcwd();sys.path[:0]=[R+'/reference/combo',R+'/reference/taylor']
+import replica2;from combog import ComboG
+print(replica2.run(10000,ComboG(R+'/reference/qt1/blob.bin'))['edge'])"   # 444.3066107552986
+```
+
+Startup imports: `reference/combo` (for `combog` and `twocomp`) and `reference/taylor` (for `replica2`) must be on `sys.path`; with `-I`, insert them explicitly as above.
+
+Compile, F and engine, from the engine checkout after the tools setup (`TASK_ROOT` = repository root). `tools/check.py` does not put `reference/combo` on its path, so add it with `PYTHONPATH` (its `reference/twocomp/twocomp.py` is byte-identical to `reference/combo/twocomp.py`):
+
+```sh
+. scratch/env.sh && timeout 470 amm-match validate "$TASK_ROOT/contracts/Combo.sol"
+. scratch/env.sh && PYTHONPATH="$TASK_ROOT/reference/combo" timeout 470 python "$TASK_ROOT/tools/check.py" \
+  "$TASK_ROOT/contracts/Combo.sol" combog.ComboG 70000 70050 scratch/F_combo_70000_70050.json
+. scratch/env.sh && timeout 470 python "$TASK_ROOT/tools/engine.py" \
+  "$TASK_ROOT/contracts/Combo.sol" "$TASK_ROOT/reference/qt1/Strategy.sol" START END scratch/engine_combo_START_END.json
+```
+
+Run engine ranges only from the fresh blocks above, in chunks short enough for eight minutes, and never repeat a seed.
 
 ## Where things are
 
@@ -56,6 +98,6 @@ See `tools/README.md` for the pinned engine setup. This tools item preserves the
 - `reference/taylor/`: unchanged pinned replica and Taylor gate inputs.
 - `reference/qtr2/`: verified gas-trimmed Solidity, verbatim span-search patch and patched Solidity.
 - `reference/twocomp/` and `reference/mix/`: verbatim two-component and posterior-mixture Python references.
-- `contracts/`: frozen candidate TC-A and its diff; `reference/candidate/`: its gate record; `reference/combo/`: COMBO references.
+- `contracts/`: frozen candidate TC-A and its diff, plus unconfirmed `Combo.sol` and `combo.diff` (against TC-A); `reference/candidate/`: TC-A gate record; `reference/combo/`: COMBO references, `combog.py` and the ComboG `GATES.md`.
 - [reference/CHECKS.md](reference/CHECKS.md): three-seed replica values, provenance and reproduction commands.
 - [tools/README.md](tools/README.md): engine setup and CLI commands for `check.py` (effective-fee Gate F replay) and `engine.py` (paired engine comparisons).

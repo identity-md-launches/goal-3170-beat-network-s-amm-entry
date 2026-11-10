@@ -1,0 +1,170 @@
+--- a/Candidate.sol
++++ b/Candidate.sol
+@@ -2,6 +2,7 @@
+ pragma solidity ^0.8.24;
+ import {AMMStrategyBase} from "./AMMStrategyBase.sol";
+ import {TradeInfo} from "./IAMMStrategy.sol";
++// COMBO offset quoting port; credit Taylor (gtmcknight) for replica and solved policy.
+ // Two-component posterior port; credit Taylor (gtmcknight) for policy, filter and tables.
+ // Policy: Taylor's (gtmcknight) solved game, amm-sim 4812a638, research/solved: Gaussian filter (real.py) + qm tables
+ // (qm_k1e-5.json, +3.77 vs HA on Taylor's replica). Filter, state and timing from trim-1 / port-3.
+@@ -17,9 +18,10 @@
+ // Taylor source: https://github.com/gtmcknight/amm-sim/tree/4812a6382311624e1506aca131ca35c378f930d9/research/solved
+ contract Strategy is AMMStrategyBase {
+     int256 constant U=1e18;
++    uint256 constant GATE=1;
+     int256 constant LN2=693147180559945309;
+     struct Belief { int256 m; int256 v; int256 fb; int256 fa; int256 sp; int256 r; uint256 t; uint256 cnt; bool sy; int256 pi; int256 lp; int256 mt; int256 vt; }
+-    function getName() external pure override returns(string memory) { unchecked {return "TaylorTwoCompQmTrim2";} }
++    function getName() external pure override returns(string memory) { unchecked {return "TaylorComboGQmTrim2";} }
+     function mul(int256 a,int256 b) internal pure returns(int256){ unchecked {return a*b/U;} }
+     function divi(int256 a,int256 b) internal pure returns(int256){ unchecked {return a*U/b;} }
+     function ab(int256 x) internal pure returns(int256){ unchecked {return x<0?-x:x;} }
+@@ -107,8 +109,12 @@
+     // Clamped cubic B-spline at integer x: span m (coefficients m-3..m) and the 4 nonzero bases N (WAD), Cox-de Boor.
+     function basis(uint256[87] memory W,uint256 base,uint256 ni,uint256 last,uint256 x,int256[4] memory N) internal pure returns(uint256 m){ unchecked {
+         int256 xu=int256(x)*U;int256 lastU=int256(last)*U;uint256 w0=W[base];uint256 w1=W[base+1];
+-        uint256 q;
+-        while(q<ni&&int256(((q<16?w0:w1)>>((q&15)<<4))&0xffff)*int256(K64)<=xu)q++;
++        uint256 q;uint256 hi=ni;
++        while(q<hi){
++            uint256 mid=(q+hi)>>1;
++            if(int256(((mid<16?w0:w1)>>((mid&15)<<4))&0xffff)*int256(K64)<=xu)q=mid+1;
++            else hi=mid;
++        }
+         m=3+q;
+         int256 l1=xu-kn(w0,w1,ni,lastU,m);int256 r1=kn(w0,w1,ni,lastU,m+1)-xu;
+         int256 l2=xu-kn(w0,w1,ni,lastU,m-1);int256 r2=kn(w0,w1,ni,lastU,m+2)-xu;
+@@ -117,8 +123,12 @@
+     } }
+     function basisPair(uint256[87] memory W,uint256 base,uint256 ni,uint256 last,uint256 x,int256[4] memory N,int256[4] memory M) internal pure returns(uint256 m){ unchecked {
+         int256 xu=int256(x)*U;int256 lastU=int256(last)*U;uint256 w0=W[base];uint256 w1=W[base+1];
+-        uint256 q;
+-        while(q<ni&&int256(((q<16?w0:w1)>>((q&15)<<4))&0xffff)*int256(K64)<=xu)q++;
++        uint256 q;uint256 hi=ni;
++        while(q<hi){
++            uint256 mid=(q+hi)>>1;
++            if(int256(((mid<16?w0:w1)>>((mid&15)<<4))&0xffff)*int256(K64)<=xu)q=mid+1;
++            else hi=mid;
++        }
+         m=3+q;
+         int256 l1=xu-kn(w0,w1,ni,lastU,m);int256 r1=kn(w0,w1,ni,lastU,m+1)-xu;
+         int256 l2=xu-kn(w0,w1,ni,lastU,m-1);int256 r2=kn(w0,w1,ni,lastU,m+2)-xu;
+@@ -167,7 +177,7 @@
+         int256[4] memory Nr0=P.Nr0;int256[4] memory Nr1=P.Nr1;int256[4] memory Nc0=P.Nc0;int256[4] memory Nc1=P.Nc1;
+         uint256 mr0=P.mr0;uint256 dr=P.dr;uint256 mc0=P.mc0;uint256 dc=P.dc;
+         int256 A0;int256 A1;int256 A2;int256 A3;int256 A4;int256 A5;int256 A6;int256 A7;
+-        uint256 nc=X.nc;bool two=X.tt!=0;
++        uint256 nc=X.nc;bool two=X.tt!=0;bool point=!two&&X.B0[0]==U;
+         int256 b00=X.B0[0];int256 b01=X.B0[1];int256 b02=X.B0[2];int256 b03=X.B0[3];
+         int256 b10=X.B1[0];int256 b11=X.B1[1];int256 b12=X.B1[2];int256 b13=X.B1[3];
+         for(uint256 bb=0;bb<=dr+3;bb++){
+@@ -175,10 +185,15 @@
+             uint256 Li=(mr0-3+bb)*nc+mc0-3;
+             for(uint256 cc=0;cc<=dc+3;cc++){
+                 uint256 lane=W[3+(Li>>2)]>>((Li&3)<<6);Li++;
+-                int256 c0=int256(int16(uint16(lane)));int256 c1=int256(int16(uint16(lane>>16)));int256 c2=int256(int16(uint16(lane>>32)));int256 c3=int256(int16(uint16(lane>>48)));
++                int256 c0=int256(int16(uint16(lane)));int256 d;
+                 int256 wc0=cc<4?Nc0[cc]:int256(0);int256 wc1=cc>=dc?Nc1[cc-dc]:int256(0);
+-                int256 d=b00*c0+b01*c1+b02*c2+b03*c3;s0+=wc0*d;s1+=wc1*d;
+-                if(two){d=b10*c0+b11*c1+b12*c2+b13*c3;s2+=wc0*d;s3+=wc1*d;}
++                if(point){d=U*c0;}
++                else {
++                    int256 c1=int256(int16(uint16(lane>>16)));int256 c2=int256(int16(uint16(lane>>32)));int256 c3=int256(int16(uint16(lane>>48)));
++                    d=b00*c0+b01*c1+b02*c2+b03*c3;
++                    if(two){int256 d1=b10*c0+b11*c1+b12*c2+b13*c3;s2+=wc0*d1;s3+=wc1*d1;}
++                }
++                s0+=wc0*d;s1+=wc1*d;
+             }
+             int256 wr0=bb<4?Nr0[bb]:int256(0);int256 wr1=bb>=dr?Nr1[bb-dr]:int256(0);
+             A0+=wr0*s0;A1+=wr1*s0;A2+=wr0*s1;A3+=wr1*s1;
+@@ -194,22 +209,55 @@
+         if(sy){T2s(W);return(W,24,14);}T2c(W);return(W,12,8);
+     } }
+     // real.py RealPolicy.lookup: w, r, sd in WAD bps; returns (bid fee, ask fee) in WAD.
+-    function fees(int256 w,int256 r,uint256 ph,bool sy,int256 sd) internal pure returns(int256 fb,int256 fa){ unchecked {
++    function sdBasis(Ctx memory X,int256 sd,bool point) internal pure { unchecked {
++        if(point){X.B0[0]=U;return;}
+         uint256 k;while(k<6&&sd>=S(k+1))k++;
+         int256 tt=(sd-S(k))*U/(S(k+1)-S(k));if(tt<0)tt=0;if(tt>U)tt=U;
++        X.tt=tt;bern(k,X.B0);if(tt!=0)bern(k+1,X.B1);
++    } }
++    struct Grid {uint256 i;uint256 j;uint256 last;int256 f;int256 g;int256 base;}
++    function grid(int256 w,int256 r,uint256 ph) internal pure returns(Grid memory Q){ unchecked {
+         int256 pw=w/5+160*U;if(pw<0)pw=0;if(pw>320*U)pw=320*U;
+-        int256 p2;uint256 last;
+-        if(ph==0){int256 l2=r/5;if(l2< -6*U)l2=-6*U;if(l2>6*U)l2=6*U;p2=l2+6*U;last=12;}else{p2=pos2(r/5);last=48;}
+-        uint256 i=uint256(pw/U);uint256 j=uint256(p2/U);if(i>319)i=319;if(j>last-1)j=last-1;
+-        int256 f=pw-int256(i)*U;int256 g=p2-int256(j)*U;
+-        Ctx memory X;(uint256[87] memory W,uint256 nr,uint256 nc)=table(ph,sy);X.nr=nr;X.nc=nc;X.last=last;X.tt=tt;bern(k,X.B0);bern(k+1,X.B1);
+-        (Patch memory P,Patch memory M)=patches(W,X,i,j);
+-        int256 Fa=interp(W,X,P,f,g);
+-        int256 Fb=interp(W,X,M,U-f,U-g);
+-        int256 base=(pw-160*U)*5;
+-        int256 aw=base-w+Fa;int256 bw=w-base+Fb;
++        int256 p2;
++        if(ph==0){int256 l2=r/5;if(l2< -6*U)l2=-6*U;if(l2>6*U)l2=6*U;p2=l2+6*U;Q.last=12;}else{p2=pos2(r/5);Q.last=48;}
++        Q.i=uint256(pw/U);Q.j=uint256(p2/U);if(Q.i>319)Q.i=319;if(Q.j>Q.last-1)Q.j=Q.last-1;
++        Q.f=pw-int256(Q.i)*U;Q.g=p2-int256(Q.j)*U;Q.base=(pw-160*U)*5;
++    } }
++    function offsets(int256 w,int256 r,uint256 ph,bool sy,int256 sd) internal pure returns(int256 a,int256 b){ unchecked {
++        Grid memory Q=grid(w,r,ph);
++        Ctx memory X;(uint256[87] memory W,uint256 nr,uint256 nc)=table(ph,sy);X.nr=nr;X.nc=nc;X.last=Q.last;sdBasis(X,sd,ph==0&&sd==0);
++        (Patch memory P,Patch memory M)=patches(W,X,Q.i,Q.j);
++        int256 Fa=interp(W,X,P,Q.f,Q.g);
++        int256 Fb=interp(W,X,M,U-Q.f,U-Q.g);
++        return(Q.base+Fa,Fb-Q.base);
++    } }
++    function convert(int256 a,int256 b,int256 w) internal pure returns(int256 fb,int256 fa){ unchecked {
++        int256 aw=a-w;int256 bw=b+w;
+         fa=aw>0?U-exp(-aw/10000):int256(0);fb=bw>0?U-exp(-bw/10000):int256(0);
+         fb=clip(fb,0,U/10);fa=clip(fa,0,U/10);
++    } }
++    function quote(Belief memory b,int256 s,bool buy,int256 oldR,uint256 ph,bool mixed) internal pure returns(int256 fb,int256 fa){ unchecked {
++        int256 ls=ln(s);int256 w=(ls-b.m)*10000;
++        int256 a;int256 d;uint256 n=mixed?2:1;
++        int256 lr=mixed?ln(oldR):ln(b.r);
++        for(uint256 i=0;i<n;i++){
++            int256 qw;int256 qr;uint256 phase;bool sy;int256 sd;
++            if(mixed){
++                int256 m=i==0?b.lp:b.mt;
++                int256 rival=clip(lr,m+(-3004509020298721),m-(-3004509020298721));
++                sy=false;phase=i;
++                if(i==1){
++                    int256 cand=buy?ls+ln(U-b.fb)-(-3004509020298721):ls+(-3004509020298721)-ln(U-b.fa);
++                    sy=buy?cand<rival:cand>rival;if(sy)rival=cand;
++                    sd=root(b.vt)*10000;
++                }
++                qw=(ls-m)*10000;qr=(rival-m)*10000;
++            }else {qw=w;qr=(lr-b.m)*10000;phase=ph;sy=b.sy;sd=root(b.v)*10000;}
++            (int256 ai,int256 bi)=offsets(qw,qr,phase,sy,sd);
++            if(mixed){int256 weight=i==0?b.pi:U-b.pi;a+=mul(weight,ai);d+=mul(weight,bi);}
++            else {a=ai;d=bi;}
++        }
++        return convert(a,d,w);
+     } }
+     function T0c(uint256[87] memory W) internal pure { unchecked {
+         W[0]=0x2b762af92aaf2a6729f0290226fe2610259925512507248a23b422211e0711d1;
+@@ -614,17 +662,18 @@
+         b.sp=int256(uint256(uint128(p2)));b.r=int256(p2>>128);
+         b.fb=int256(uint256(uint64(p3)));b.fa=int256(uint256(uint64(p3>>64)));
+         b.t=uint64(p3>>128);b.cnt=(p3>>192)&((uint256(1)<<63)-1);b.sy=p3>>255==1;
+-        (b.m,b.v)=moments(b.pi,b.lp,0,b.mt,b.vt);
+         int256 s=int256(t.reserveY*1e18/t.reserveX);bool arb;
+-        if(t.timestamp>b.t)arb=update(b,s,t.isBuy,t.timestamp-b.t);
++        int256 oldR=b.r;uint256 dt=t.timestamp-b.t;
++        if(dt>0)arb=update(b,s,t.isBuy,dt);
++        else (b.m,b.v)=moments(b.pi,b.lp,0,b.mt,b.vt);
+         uint256 ph;
+         if(!arb){
+             int256 c=t.isBuy?divi(mul(s,U-b.fb),997e15):divi(mul(s,997e15),U-b.fa);
+             if(t.isBuy?c<b.r:c>b.r){b.r=c;b.sy=true;}
+             b.cnt++;ph=b.cnt==1?1:2;
+         }
+-        int256 w=(ln(s)-b.m)*10000;int256 r=(ln(b.r)-b.m)*10000;
+-        (b.fb,b.fa)=fees(w,r,ph,b.sy,root(b.v)*10000);b.sp=s;b.t=t.timestamp;save(b);
++        (b.fb,b.fa)=quote(b,s,t.isBuy,oldR,ph,dt>0&&dt<=GATE&&b.pi>5e15&&b.pi<995e15);
++        b.sp=s;b.t=t.timestamp;save(b);
+         return(uint256(b.fb),uint256(b.fa));
+     } }
+ }
