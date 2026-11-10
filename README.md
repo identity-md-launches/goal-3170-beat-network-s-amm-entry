@@ -16,8 +16,12 @@ Limits: deployed runtime <= **24,576 bytes**; engine `afterSwap` peak <= **245,0
 
 | Kind | Seeds | Status / purpose |
 | --- | --- | --- |
-| Engine | 9800000..9801089 | Spent or reserved (includes this item's 9801088..9801089 smoke) |
-| Engine | 9801090 | Next free seed |
+| Engine | 9800000..9801089 | Spent or reserved (includes 9801088..9801089 tools smoke) |
+| Engine | 9801090..9802113 | TC-A confirmation block A (e4-confirm-*) |
+| Engine | 9802114..9803137 | TC-A confirmation block B (e4-confirm-*) |
+| Engine | 9803138..9803185 | e4-combo-port (3 x 16) |
+| Engine | 9803186..9803187 | e4-trunk-candidate smoke (Candidate vs qt1, spent) |
+| Engine | 9803188 | **NEXT FREE ENGINE SEED** |
 | Replica | 60000..61023 | Choose |
 | Replica | 10000..12047 | Report |
 | Replica | 70000..70099 | Gate F |
@@ -39,11 +43,19 @@ For replica checks, copy `reference/taylor/` into a scratch directory and place 
 See `tools/README.md` for the pinned engine setup. This tools item preserves the baseline and consumes the assigned engine smoke seeds 9801088..9801089.
 
 
+## Candidate
+
+- `contracts/Candidate.sol` (TC-A, `TaylorTwoCompQmTrim2`): `reference/qtr2/Strategy.sol` + `contracts/candidate.diff` (`patch -p1`), SHA256 `b87234c89e094f4955578417c1266129b0f96e6dfda68e3fb8866e00eeda71a2`, deployed runtime **21,102 bytes** (solc 0.8.24, challenge compiler).
+- Python reference: `reference/twocomp/twocomp.py`, `TwoComp`, `DUAL_CUTS=2`.
+- Gates: [reference/candidate/GATES.md](reference/candidate/GATES.md) (P, Q +0.4248 ± 0.0122 vs qt1-ref on 10000..12047, gas probe 177,611, F max 6.3e-6 bps on 50 x 2,000, engine +0.4145 ± 0.0423 vs qt1 on n=128, peak 201,916, 0 OOG).
+- COMBO references (replica only, no Solidity yet): [reference/combo/README.md](reference/combo/README.md).
+
 ## Where things are
 
 - `reference/qt1/`: unchanged baseline Solidity, Python reference and decoded table blob.
 - `reference/taylor/`: unchanged pinned replica and Taylor gate inputs.
 - `reference/qtr2/`: verified gas-trimmed Solidity, verbatim span-search patch and patched Solidity.
 - `reference/twocomp/` and `reference/mix/`: verbatim two-component and posterior-mixture Python references.
+- `contracts/`: frozen candidate TC-A and its diff; `reference/candidate/`: its gate record; `reference/combo/`: COMBO references.
 - [reference/CHECKS.md](reference/CHECKS.md): three-seed replica values, provenance and reproduction commands.
 - [tools/README.md](tools/README.md): engine setup and CLI commands for `check.py` (effective-fee Gate F replay) and `engine.py` (paired engine comparisons).

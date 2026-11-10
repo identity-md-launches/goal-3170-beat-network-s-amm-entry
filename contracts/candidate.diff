@@ -1,0 +1,123 @@
+--- a/Strategy.sol
++++ b/Strategy.sol
+@@ -2,6 +2,7 @@
+ pragma solidity ^0.8.24;
+ import {AMMStrategyBase} from "./AMMStrategyBase.sol";
+ import {TradeInfo} from "./IAMMStrategy.sol";
++// Two-component posterior port; credit Taylor (gtmcknight) for policy, filter and tables.
+ // Policy: Taylor's (gtmcknight) solved game, amm-sim 4812a638, research/solved: Gaussian filter (real.py) + qm tables
+ // (qm_k1e-5.json, +3.77 vs HA on Taylor's replica). Filter, state and timing from trim-1 / port-3.
+ // Fees: real.py RealPolicy.lookup over the qm-spline decoded tables (QMS1 blob sha256 3ac7cb88..., 10,167 B):
+@@ -17,8 +18,8 @@
+ contract Strategy is AMMStrategyBase {
+     int256 constant U=1e18;
+     int256 constant LN2=693147180559945309;
+-    struct Belief { int256 m; int256 v; int256 fb; int256 fa; int256 sp; int256 r; uint256 t; uint256 cnt; bool sy; }
+-    function getName() external pure override returns(string memory) { unchecked {return "TaylorGaussianQmTrim2";} }
++    struct Belief { int256 m; int256 v; int256 fb; int256 fa; int256 sp; int256 r; uint256 t; uint256 cnt; bool sy; int256 pi; int256 lp; int256 mt; int256 vt; }
++    function getName() external pure override returns(string memory) { unchecked {return "TaylorTwoCompQmTrim2";} }
+     function mul(int256 a,int256 b) internal pure returns(int256){ unchecked {return a*b/U;} }
+     function divi(int256 a,int256 b) internal pure returns(int256){ unchecked {return a*U/b;} }
+     function ab(int256 x) internal pure returns(int256){ unchecked {return x<0?-x:x;} }
+@@ -539,41 +540,81 @@
+         W[25]=0xff24f9c902090002003a03e2fe230000fff2fde40180fff6fff10058ff6bffff;
+         W[26]=0xffd3005e0074ffec006cfc70fc6c0020ff88017a0463fff6fffc00f8fc56ffff;
+     } }
+-    // Packed layout: signed m / unsigned v, fees, and spots in 128-bit halves;
+-    // timestamp in low 128 bits, count in the next 127, synced in the top bit.
+-    // Packing is lossless in the challenge's state range; arithmetic remains int256.
++    // Four words: arb point/weight, retail mean/variance, spots, fees/time/count.
+     function save(Belief memory b) internal { unchecked {
+-        slots[0]=uint256(uint128(int128(b.m)))|(uint256(b.v)<<128);
+-        slots[1]=uint256(b.fb)|(uint256(b.fa)<<128);
++        slots[0]=uint256(uint128(int128(b.lp)))|(uint256(b.pi)<<128);
++        slots[1]=uint256(uint128(int128(b.mt)))|(uint256(b.vt)<<128);
+         slots[2]=uint256(b.sp)|(uint256(b.r)<<128);
+-        slots[3]=b.t|(b.cnt<<128)|(b.sy?uint256(1)<<255:0);
++        slots[3]=uint256(b.fb)|(uint256(b.fa)<<64)|(b.t<<128)|(b.cnt<<192)|(b.sy?uint256(1)<<255:0);
++    } }
++    function moments(int256 p,int256 m0,int256 v0,int256 m1,int256 v1) internal pure returns(int256 m,int256 v){ unchecked {
++        m=mul(p,m0)+mul(U-p,m1);
++        v=mul(p,v0+mul(m0-m,m0-m))+mul(U-p,v1+mul(m1-m,m1-m));
++        if(v<0)v=0;
+     } }
+     function afterInitialize(uint256 x,uint256 y) external override returns(uint256,uint256){ unchecked {
+-        Belief memory b; b.sp=int256(y*1e18/x);b.r=b.sp;b.m=ln(b.sp);
++        Belief memory b; b.sp=int256(y*1e18/x);b.r=b.sp;b.lp=ln(b.sp);b.pi=U;
+         b.fb=2823606104386589;b.fa=2823606104386589;save(b);return(uint256(b.fb),uint256(b.fa));
+     } }
++    struct Mix {int256 p; int256 m0; int256 v0; int256 m1; int256 v1;}
++    // Reweight by the no-arbitrage likelihood, preserving both components for two cuts.
++    function cut(Mix memory c,int256 lo,int256 hi) internal pure { unchecked {
++        int256 z0;int256 z1;
++        (z0,c.m0,c.v0)=trunc(c.m0,c.v0+893025000000,lo,hi);
++        if(c.p==U)return;
++        (z1,c.m1,c.v1)=trunc(c.m1,c.v1+893025000000,lo,hi);
++        int256 w0=mul(c.p,z0);int256 w1=mul(U-c.p,z1);int256 total=w0+w1;
++        if(total>0){c.p=divi(w0,total);}
++        else {if(c.p<U/2){c.m0=c.m1;c.v0=c.v1;}c.p=U;}
++        if(c.p==0){c.m0=c.m1;c.v0=c.v1;c.p=U;}
++    } }
+     function update(Belief memory b,int256 s,bool buy,uint256 dt) internal pure returns(bool arb){ unchecked {
+-        int256 lo;int256 hi;int256 m;int256 v;int256 lp;int256 la;int256 Z;int256 mt;int256 vt;int256 d;int256 pi;
+-        lo=ln(mul(b.sp,U-b.fb));hi=ln(divi(b.sp,U-b.fa));m=b.m;v=b.v;
++        int256 lo=ln(mul(b.sp,U-b.fb));int256 hi=ln(divi(b.sp,U-b.fa));
++        Mix memory c=Mix(b.pi,b.lp,0,b.mt,b.vt);
++        if(c.p==0){c.p=U;c.m0=c.m1;c.v0=c.v1;}
+         uint256 n=dt-1;if(n>12)n=12;
+-        for(uint256 i=0;i<n;i++){v+=893025000000;(,m,v)=trunc(m,v,lo,hi);}
+-        v+=893025000000;
+-        lp=ln(buy?mul(s,U-b.fb):divi(s,U-b.fa));
+-        int256 sd=root(v);la=divi(pdf(divi(lp-m,sd)),sd);
+-        (Z,mt,vt)=truncSD(m,v,lo,hi,sd);
+-        d=ab(ln(divi(s,b.sp)));if(d<1e9)d=1e9;
+-        pi=pdf(divi(ln(d)+6801595083153746944,1176000000000000000));
++        for(uint256 i=0;i<n;i++){
++            if(i==2&&c.p<U){(c.m0,c.v0)=moments(c.p,c.m0,c.v0,c.m1,c.v1);c.p=U;}
++            cut(c,lo,hi);
++        }
++        c.v0+=893025000000;c.v1+=893025000000;
++        int256 lp=ln(buy?mul(s,U-b.fb):divi(s,U-b.fa));
++        int256 sd=root(c.v0);int256 la=mul(c.p,divi(pdf(divi(lp-c.m0,sd)),sd));
++        int256 z0;int256 z1;
++        (z0,c.m0,c.v0)=truncSD(c.m0,c.v0,lo,hi,sd);
++        if(c.p<U){
++            sd=root(c.v1);la+=mul(U-c.p,divi(pdf(divi(lp-c.m1,sd)),sd));
++            (z1,c.m1,c.v1)=truncSD(c.m1,c.v1,lo,hi,sd);
++        }
++        int256 w0=mul(c.p,z0);int256 w1=mul(U-c.p,z1);int256 Z=w0+w1;
++        int256 mt;int256 vt;
++        if(c.p==U){mt=c.m0;vt=c.v0;}
++        else if(Z>0){(mt,vt)=moments(divi(w0,Z),c.m0,c.v0,c.m1,c.v1);}
++        else if(c.p>=U/2){mt=c.m0;vt=c.v0;}else{mt=c.m1;vt=c.v1;}
++        int256 d=ab(ln(divi(s,b.sp)));if(d<1e9)d=1e9;
++        int256 pi=pdf(divi(ln(d)+6801595083153746944,1176000000000000000));
+         int256 lr=divi(mul(mul(Z,260000000000000000),pi),mul(d,1176000000000000000));
+         pi=la+lr>0?divi(la,la+lr):int256(0);arb=pi>U/2;
+         if(pi>5e15&&pi<995e15){
+-            b.m=mul(pi,lp)+mul(U-pi,mt);
+-            b.v=mul(pi,mul(lp-b.m,lp-b.m))+mul(U-pi,vt+mul(mt-b.m,mt-b.m));
+-        }else if(arb){b.m=lp;b.v=0;}else{b.m=mt;b.v=vt;}
++            b.pi=pi;b.lp=lp;b.mt=mt;b.vt=vt;
++            (b.m,b.v)=moments(pi,lp,0,mt,vt);
++        }else {
++            b.pi=U;b.lp=arb?lp:mt;b.mt=0;b.vt=0;
++            // Single retail Gaussian is represented by weight zero on the point.
++            if(!arb){b.pi=0;b.mt=mt;b.vt=vt;b.m=mt;b.v=vt;}
++            else {b.m=lp;b.v=0;}
++        }
+         int256 pe=exp(b.m);b.r=clip(b.r,mul(pe,997e15),divi(pe,997e15));b.cnt=0;b.sy=false;
+     } }
+     function afterSwap(TradeInfo calldata t) external override returns(uint256,uint256){ unchecked {
+         uint256 p0=slots[0];uint256 p1=slots[1];uint256 p2=slots[2];uint256 p3=slots[3];
+-        Belief memory b=Belief(int256(int128(uint128(p0))),int256(p0>>128),int256(uint256(uint128(p1))),int256(p1>>128),int256(uint256(uint128(p2))),int256(p2>>128),uint128(p3),(p3>>128)&((uint256(1)<<127)-1),(p3>>255)==1);
++        Belief memory b;
++        b.lp=int256(int128(uint128(p0)));b.pi=int256(p0>>128);
++        b.mt=int256(int128(uint128(p1)));b.vt=int256(p1>>128);
++        b.sp=int256(uint256(uint128(p2)));b.r=int256(p2>>128);
++        b.fb=int256(uint256(uint64(p3)));b.fa=int256(uint256(uint64(p3>>64)));
++        b.t=uint64(p3>>128);b.cnt=(p3>>192)&((uint256(1)<<63)-1);b.sy=p3>>255==1;
++        (b.m,b.v)=moments(b.pi,b.lp,0,b.mt,b.vt);
+         int256 s=int256(t.reserveY*1e18/t.reserveX);bool arb;
+         if(t.timestamp>b.t)arb=update(b,s,t.isBuy,t.timestamp-b.t);
+         uint256 ph;
