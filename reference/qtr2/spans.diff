@@ -1,0 +1,32 @@
+--- qtr2.sol
++++ candidate.sol
+@@ -106,8 +106,12 @@
+     // Clamped cubic B-spline at integer x: span m (coefficients m-3..m) and the 4 nonzero bases N (WAD), Cox-de Boor.
+     function basis(uint256[87] memory W,uint256 base,uint256 ni,uint256 last,uint256 x,int256[4] memory N) internal pure returns(uint256 m){ unchecked {
+         int256 xu=int256(x)*U;int256 lastU=int256(last)*U;uint256 w0=W[base];uint256 w1=W[base+1];
+-        uint256 q;
+-        while(q<ni&&int256(((q<16?w0:w1)>>((q&15)<<4))&0xffff)*int256(K64)<=xu)q++;
++        uint256 q;uint256 hi=ni;
++        while(q<hi){
++            uint256 mid=(q+hi)>>1;
++            if(int256(((mid<16?w0:w1)>>((mid&15)<<4))&0xffff)*int256(K64)<=xu)q=mid+1;
++            else hi=mid;
++        }
+         m=3+q;
+         int256 l1=xu-kn(w0,w1,ni,lastU,m);int256 r1=kn(w0,w1,ni,lastU,m+1)-xu;
+         int256 l2=xu-kn(w0,w1,ni,lastU,m-1);int256 r2=kn(w0,w1,ni,lastU,m+2)-xu;
+@@ -116,8 +120,12 @@
+     } }
+     function basisPair(uint256[87] memory W,uint256 base,uint256 ni,uint256 last,uint256 x,int256[4] memory N,int256[4] memory M) internal pure returns(uint256 m){ unchecked {
+         int256 xu=int256(x)*U;int256 lastU=int256(last)*U;uint256 w0=W[base];uint256 w1=W[base+1];
+-        uint256 q;
+-        while(q<ni&&int256(((q<16?w0:w1)>>((q&15)<<4))&0xffff)*int256(K64)<=xu)q++;
++        uint256 q;uint256 hi=ni;
++        while(q<hi){
++            uint256 mid=(q+hi)>>1;
++            if(int256(((mid<16?w0:w1)>>((mid&15)<<4))&0xffff)*int256(K64)<=xu)q=mid+1;
++            else hi=mid;
++        }
+         m=3+q;
+         int256 l1=xu-kn(w0,w1,ni,lastU,m);int256 r1=kn(w0,w1,ni,lastU,m+1)-xu;
+         int256 l2=xu-kn(w0,w1,ni,lastU,m-1);int256 r2=kn(w0,w1,ni,lastU,m+2)-xu;

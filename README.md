@@ -16,8 +16,8 @@ Limits: deployed runtime <= **24,576 bytes**; engine `afterSwap` peak <= **245,0
 
 | Kind | Seeds | Status / purpose |
 | --- | --- | --- |
-| Engine | 9800000..9800319 | Used by episode 1 |
-| Engine | 9800320 | Next free seed |
+| Engine | 9800000..9801089 | Spent or reserved (includes this item's 9801088..9801089 smoke) |
+| Engine | 9801090 | Next free seed |
 | Replica | 60000..61023 | Choose |
 | Replica | 10000..12047 | Report |
 | Replica | 70000..70099 | Gate F |
@@ -36,4 +36,14 @@ The 7,892,018-byte `qm_k1e-5.json` is deliberately not vendored. Download it fro
 
 For replica checks, copy `reference/taylor/` into a scratch directory and place the downloaded qm table beside `gates.py`; run `python3 -I gates.py` there. Copy `reference/qt1/qmref.py` and `blob.bin` alongside the replica to check `replica2.run(10000, QMRef('blob.bin'))['edge']` (expected 443.101741). With `-I`, a small driver must explicitly insert its own directory in `sys.path`, as Taylor's scripts do.
 
-See `tools/README.md` for the pinned engine setup. This seed item does not alter the baseline or consume engine seeds.
+See `tools/README.md` for the pinned engine setup. This tools item preserves the baseline and consumes the assigned engine smoke seeds 9801088..9801089.
+
+
+## Where things are
+
+- `reference/qt1/`: unchanged baseline Solidity, Python reference and decoded table blob.
+- `reference/taylor/`: unchanged pinned replica and Taylor gate inputs.
+- `reference/qtr2/`: verified gas-trimmed Solidity, verbatim span-search patch and patched Solidity.
+- `reference/twocomp/` and `reference/mix/`: verbatim two-component and posterior-mixture Python references.
+- [reference/CHECKS.md](reference/CHECKS.md): three-seed replica values, provenance and reproduction commands.
+- [tools/README.md](tools/README.md): engine setup and CLI commands for `check.py` (effective-fee Gate F replay) and `engine.py` (paired engine comparisons).
